@@ -1,0 +1,9 @@
+fault_label,count
+healthy,8585
+faulty,5496
+CG_fault,2094
+AG_fault,1482
+BG_fault,1420
+AB_fault,1187
+BC_fault,1158
+ABC_fault,578
