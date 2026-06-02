@@ -41,11 +41,11 @@ def _(pd):
         # __file__ peut être absent selon le mode d'exécution : on retombe sur le CWD.
         _base = Path.cwd()
 
-    _data_dir = _find_data_dir(_base)
-    df = pd.read_csv(_data_dir / "nhtsa_vehicle_safety_recall_intelligence_ultimate.csv")
+    data_dir = _find_data_dir(_base)
+    df = pd.read_csv(data_dir / "nhtsa_vehicle_safety_recall_intelligence_ultimate.csv")
 
     df.head()
-    return (df,)
+    return data_dir, df
 
 
 @app.cell(hide_code=True)
@@ -94,7 +94,10 @@ def _(df_2):
     print(vehicle_year)
     print(vehicle_year_num)
     print(vehicle_era)
-    df_3 = df_2.dropna()
+    # ATTENTION: df_2.dropna() supprimait ~98% des lignes (44984 -> 915) car des
+    # colonnes comme MFR_COMP_PTNO / manufacture_date_* sont presque vides.
+    # On ne supprime que les lignes nulles sur les colonnes réellement utilisées.
+    df_3 = df_2.dropna(subset=['vehicle_year_num', 'defect_severity', 'component_category'])
     df_3 = df_3[(df_3['vehicle_year_num'] >= 2014) & (df_3['vehicle_year_num'] <= 2024)]
     return (df_3,)
 
@@ -314,6 +317,109 @@ def _(df_3):
 @app.cell
 def _(df_3):
     df_3[df_3['check'] < 0][['recall_date_parsed', 'notification_date_parsed', 'jours_ecoules', 'days_to_owner_notification', 'check']]
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Taux normalisé par la flotte (immatriculations)
+    """)
+    return
+
+
+@app.cell
+def _(data_dir, df, pd, plt):
+    # Flotte immatriculée par année calendaire (national = somme de tous les États).
+    _reg = pd.read_csv(data_dir / "Motor_Vehicle_Registrations__1900_-_2024__MV-1_.csv")
+    fleet_per_year = (
+        _reg[_reg['Category'].isin(['Auto', 'Truck'])]
+        .groupby('Year')['Vehicles'].sum()
+        .rename('fleet')
+    )
+
+    # Unité = campagne de rappel UNIQUE. Chaque ligne du dataset est un millésime/modèle
+    # d'une campagne (~9 lignes par campagne), donc on déduplique via recall_campaign_id.
+    _veh = df[df['recall_type_label'] == 'Vehicle']
+    campaigns_per_year = (
+        _veh.groupby('recall_year')['recall_campaign_id'].nunique().rename('campaigns')
+    )
+
+    # Période commune aux deux sources (immatriculations: ... -> 2024).
+    recall_rate = pd.concat([campaigns_per_year, fleet_per_year], axis=1).dropna()
+    recall_rate = recall_rate[(recall_rate.index >= 2010) & (recall_rate.index <= 2024)]
+    recall_rate['per_million'] = recall_rate['campaigns'] / recall_rate['fleet'] * 1_000_000
+
+    _fig, _ax = plt.subplots(figsize=(12, 6))
+    recall_rate['per_million'].plot(kind='bar', color='#4C78A8', ax=_ax)
+    _ax.set_title('Campagnes de rappel par million de véhicules immatriculés (par année de rappel)')
+    _ax.set_xlabel('Année de rappel')
+    _ax.set_ylabel('Campagnes / million de véhicules')
+    _ax.set_xticklabels([int(y) for y in recall_rate.index], rotation=45)
+    plt.tight_layout()
+    plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Over-engineering : montée de l'électronique / du logiciel
+    """)
+    return
+
+
+@app.cell
+def _(df, plt):
+    # Part des rappels par famille de composant et par millésime (composition, en %).
+    _v = df[df['recall_type_label'] == 'Vehicle'].dropna(subset=['vehicle_year_num', 'component_category'])
+    _v = _v[(_v['vehicle_year_num'] >= 2010) & (_v['vehicle_year_num'] <= 2024)]
+
+    _electronics = ['Electrical', 'Software / EV']
+    _mechanical = ['Engine / Powertrain', 'Brakes', 'Steering', 'Suspension', 'Tires / Wheels', 'Fuel System']
+
+    def _grp(c):
+        if c in _electronics:
+            return 'Électronique / Logiciel'
+        if c in _mechanical:
+            return 'Mécanique'
+        return 'Autre'
+
+    _mix = (
+        _v.assign(groupe=_v['component_category'].map(_grp))
+        .groupby(['vehicle_year_num', 'groupe']).size()
+        .unstack(fill_value=0)
+    )
+    component_share = _mix.div(_mix.sum(axis=1), axis=0) * 100
+    component_share = component_share[['Électronique / Logiciel', 'Mécanique', 'Autre']]
+
+    _fig, _ax = plt.subplots(figsize=(12, 6))
+    component_share.plot(kind='area', stacked=True, ax=_ax,
+                         color=['#1f77b4', '#7f7f7f', '#d9d9d9'])
+    _ax.set_title("Composition des rappels par millésime : montée de l'électronique / logiciel")
+    _ax.set_xlabel('Millésime du véhicule')
+    _ax.set_ylabel('Part des rappels (%)')
+    _ax.set_ylim(0, 100)
+    _ax.legend(title='Famille de composant', loc='lower left')
+    plt.tight_layout()
+    plt.show()
+    return
+
+
+@app.cell
+def _(df, plt):
+    # Catégorie "Software / EV" : mode de défaillance quasi inexistant avant ~2016.
+    _v = df[df['recall_type_label'] == 'Vehicle'].dropna(subset=['vehicle_year_num', 'component_category'])
+    _sw = _v[_v['component_category'] == 'Software / EV'].groupby('vehicle_year_num').size()
+    _sw = _sw[(_sw.index >= 2010) & (_sw.index <= 2024)]
+
+    _fig, _ax = plt.subplots(figsize=(12, 5))
+    _ax.bar([int(y) for y in _sw.index], _sw.values, color='#1f77b4')
+    _ax.set_title("Rappels « Software / EV » par millésime (mode de défaillance émergent)")
+    _ax.set_xlabel('Millésime du véhicule')
+    _ax.set_ylabel('Nombre de rappels')
+    plt.tight_layout()
+    plt.show()
     return
 
 
