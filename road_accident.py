@@ -150,7 +150,7 @@ def _(df, plt):
     ax_tot.set_title("Road toll over the period (2021-2022)")
     ax_tot.set_ylabel("Cumulative total")
     ax_tot.margins(y=0.12)  # marge en haut pour ne pas couper les étiquettes
-    fig_tot.savefig("plots/bilan_total.png", dpi=300)
+    fig_tot.savefig("plots/bilan_total.png", dpi=300, bbox_inches="tight")
     fig_tot
     return
 
